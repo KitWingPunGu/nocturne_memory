@@ -51,7 +51,7 @@
   - `create_relationship("char_a", "char_b", "LOVES", "他们是恋人")` → 建立关系。
 - **权限**：AI 可以 **创建** 和 **修改** 内容，但 **不能删除**（删除权留给人类）。
 
-![MCP Interface](docs/images/mcp.png)
+<img src="docs/images/mcp.png" width="400" alt="MCP Interface" />
 
 ### 3. 人类界面 (Web Frontend)
 
