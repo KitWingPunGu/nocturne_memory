@@ -39,7 +39,6 @@ CORE_MEMORY_IDS = [
     "rel:char_nocturne>char_salem",
     "rel:char_nocturne>char_kurou",
     # === Important Guidelines ===
-    "manual_nocturne_bluesky",
 ]
 
 # Session ID for this MCP server instance
