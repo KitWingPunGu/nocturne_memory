@@ -1389,7 +1389,7 @@ class Neo4jClient:
         搜索节点
 
         Args:
-            query: 搜索关键词
+            query: 搜索关键词（支持多个关键词空格分隔）
             node_types: 节点类型过滤列表
             limit: 返回数量限制
 
@@ -1404,9 +1404,12 @@ class Neo4jClient:
                 }
             ]
         """
-        # 构建Cypher查询
-        # 注意：这里使用简单的CONTAINS搜索，生产环境建议使用全文索引
+        # 预处理搜索词：分割为空格分隔的关键词列表，并转为小写
+        keywords = [k.lower() for k in query.split()]
+        if not keywords:
+            return []
 
+        # 构建Cypher查询
         type_filter = ""
         if node_types:
             # 安全起见，验证node_types是否在允许列表中
@@ -1414,14 +1417,18 @@ class Neo4jClient:
             if valid_types:
                 # 转换回Label名称
                 labels = [ALLOWED_NODE_TYPES[t] for t in valid_types]
-                # Cypher中检查标签：any(l in labels(e) WHERE l IN ['Character', 'Location'])
-                # 注意：Cypher list syntax is different from Python's list formatting
                 labels_str = str(labels) # e.g. "['Character', 'Location']"
                 type_filter = f"AND any(l in labels(e) WHERE l IN {labels_str})"
 
+        # Entity 查询：要求所有关键词都必须出现在 id OR name OR content 中
+        # 使用 all(kw IN $keywords WHERE ...) 实现 AND 逻辑
         cypher_query = f"""
         MATCH (e:Entity)-[:CURRENT]->(s:State)
-        WHERE (toLower(s.name) CONTAINS toLower($query) OR toLower(s.content) CONTAINS toLower($query))
+        WHERE all(kw IN $keywords WHERE 
+            toLower(e.id) CONTAINS kw OR 
+            toLower(s.name) CONTAINS kw OR 
+            toLower(s.content) CONTAINS kw
+        )
         {type_filter}
         RETURN e.id as resource_id,
                s.name as name,
@@ -1430,20 +1437,24 @@ class Neo4jClient:
         """
 
         # Query for Edges (Direct Relationships)
-        # Only include if no type filter is present, or if 'relationship' is specifically requested
-        # Note: "relationship" in node_types typically refers to Relay Entities ("Relationship" label),
-        # but semantically users likely expect to find Direct Edges too when searching for relationships.
         include_edges = True
         if node_types and "relationship" not in node_types:
             include_edges = False
             
         edge_query = ""
         if include_edges:
+            # Edge 查询：同样要求所有关键词出现在 resource_id OR relation OR content 中
+            # resource_id 构造为: rel:viewer_id>target_id
             edge_query = """
             UNION ALL
             MATCH (vs:State)-[r:DIRECT_EDGE]->(ts:State)
-            WHERE (toLower(r.content) CONTAINS toLower($query) OR toLower(r.relation) CONTAINS toLower($query))
-            RETURN 'rel:' + vs.entity_id + '>' + ts.entity_id as resource_id,
+            WITH vs, ts, r, 'rel:' + vs.entity_id + '>' + ts.entity_id as edge_resource_id
+            WHERE all(kw IN $keywords WHERE 
+                toLower(edge_resource_id) CONTAINS kw OR 
+                toLower(r.relation) CONTAINS kw OR 
+                toLower(r.content) CONTAINS kw
+            )
+            RETURN edge_resource_id as resource_id,
                    vs.name + ' -> ' + ts.name + ' (' + r.relation + ')' as name,
                    ['DirectEdge'] as labels,
                    r.content as content
@@ -1452,7 +1463,7 @@ class Neo4jClient:
         cypher_query = f"{cypher_query} {edge_query} LIMIT $limit"
 
         with self.driver.session() as session:
-            result = session.run(cypher_query, {"query": query, "limit": limit})
+            result = session.run(cypher_query, {"keywords": keywords, "limit": limit})
             items = []
             for record in result:
                 # 获取第一个非Entity的标签作为类型
