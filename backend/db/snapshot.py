@@ -10,14 +10,12 @@ Design Principles:
 3. Rollback creates a NEW version with snapshot content (preserves version chain)
 4. Session-based organization for easy cleanup
 
-Storage Structure:
+    Storage Structure:
     snapshots/
     └── {session_id}/
         ├── manifest.json          # Session metadata and resource index
         └── resources/
-            ├── entity__{entity_id}.json
-            ├── direct_edge__{viewer}__{target}.json
-            └── relay_edge__{viewer}__{target}__{chapter}.json
+            └── {safe_resource_id}.json
 """
 
 import os
@@ -89,18 +87,31 @@ class SnapshotManager:
         """
         Convert a resource_id to a safe filename.
         
-        Resource IDs like "rel:char_a>char_b" or "chap:a>b:name" need sanitization.
-        We use a deterministic hash suffix for uniqueness while keeping readability.
+        Resource IDs like URIs "core://path/to/memory" need sanitization.
+        We use a deterministic hash suffix for uniqueness to prevent collisions
+        (e.g. "core://a/b" vs "core://a_b") while keeping readability.
         """
+        # Calculate hash of the ORIGINAL resource_id for uniqueness
+        # This prevents "core://a/b" and "core://a_b" from colliding regardless of sanitization
+        id_hash = hashlib.md5(resource_id.encode()).hexdigest()[:8]
+
         # Replace problematic characters
-        safe_id = resource_id.replace(":", "_").replace(">", "_to_")
+        # 1. Handle protocol separator specifically for better readability
+        safe_id = resource_id.replace("://", "__")
         
-        # If the ID is too long, truncate and add hash
+        # 2. Replace remaining colons, slashes, and backslashes
+        safe_id = safe_id.replace(":", "_").replace("/", "_").replace("\\", "_")
+        
+        # 3. Replace relation arrow
+        safe_id = safe_id.replace(">", "_to_")
+        
+        # Truncate if too long (keeping enough distinct chars + hash)
+        # Windows max path is ~260 chars. We leave plenty of buffer.
         if len(safe_id) > 100:
-            hash_suffix = hashlib.md5(resource_id.encode()).hexdigest()[:8]
-            safe_id = safe_id[:90] + "_" + hash_suffix
+            safe_id = safe_id[:100]
         
-        return safe_id
+        # Always append hash to guarantee uniqueness
+        return f"{safe_id}_{id_hash}"
     
     def _get_session_dir(self, session_id: str) -> str:
         """Get the directory path for a session."""
@@ -143,6 +154,12 @@ class SnapshotManager:
     
     def has_snapshot(self, session_id: str, resource_id: str) -> bool:
         """Check if a snapshot exists for this resource in this session."""
+        # Check manifest first (handles legacy snapshots with different filename formats)
+        manifest = self._load_manifest(session_id)
+        if resource_id in manifest.get("resources", {}):
+            return True
+        
+        # Fallback to file existence check
         snapshot_path = self._get_snapshot_path(session_id, resource_id)
         return os.path.exists(snapshot_path)
     
@@ -162,8 +179,8 @@ class SnapshotManager:
         
         Args:
             session_id: Unique session identifier
-            resource_id: Resource identifier (entity_id, rel:..., chap:...)
-            resource_type: One of 'entity', 'direct_edge', 'relay_edge'
+            resource_id: Resource identifier (e.g., memory URI)
+            resource_type: Resource type (e.g., 'memory')
             snapshot_data: The complete resource state to snapshot
             
         Returns:
@@ -207,7 +224,19 @@ class SnapshotManager:
         Returns:
             The snapshot data, or None if not found
         """
-        snapshot_path = self._get_snapshot_path(session_id, resource_id)
+        # First, check manifest for the actual filename (handles legacy snapshots)
+        manifest = self._load_manifest(session_id)
+        resource_meta = manifest.get("resources", {}).get(resource_id)
+        
+        if resource_meta and resource_meta.get("file"):
+            # Use the filename recorded in manifest
+            snapshot_path = os.path.join(
+                self._get_resources_dir(session_id), 
+                resource_meta["file"]
+            )
+        else:
+            # Fallback to computed path (for forward compatibility)
+            snapshot_path = self._get_snapshot_path(session_id, resource_id)
         
         if not os.path.exists(snapshot_path):
             return None
@@ -268,7 +297,19 @@ class SnapshotManager:
         Returns:
             True if deleted, False if not found
         """
-        snapshot_path = self._get_snapshot_path(session_id, resource_id)
+        # First, check manifest for the actual filename (handles legacy snapshots)
+        manifest = self._load_manifest(session_id)
+        resource_meta = manifest.get("resources", {}).get(resource_id)
+        
+        if resource_meta and resource_meta.get("file"):
+            # Use the filename recorded in manifest
+            snapshot_path = os.path.join(
+                self._get_resources_dir(session_id), 
+                resource_meta["file"]
+            )
+        else:
+            # Fallback to computed path
+            snapshot_path = self._get_snapshot_path(session_id, resource_id)
         
         if not os.path.exists(snapshot_path):
             return False
@@ -276,7 +317,6 @@ class SnapshotManager:
         _force_remove(snapshot_path)
         
         # Update manifest
-        manifest = self._load_manifest(session_id)
         if resource_id in manifest.get("resources", {}):
             del manifest["resources"][resource_id]
             self._save_manifest(session_id, manifest)

@@ -1,7 +1,9 @@
-from .neo4j_client import Neo4jClient, get_neo4j_client, close_neo4j_client
+from .sqlite_client import SQLiteClient, get_sqlite_client, close_sqlite_client
 from .snapshot import SnapshotManager, get_snapshot_manager
 
 __all__ = [
-    "Neo4jClient", "get_neo4j_client", "close_neo4j_client",
+    # SQLite (new)
+    "SQLiteClient", "get_sqlite_client", "close_sqlite_client",
+    # Snapshot
     "SnapshotManager", "get_snapshot_manager"
 ]
