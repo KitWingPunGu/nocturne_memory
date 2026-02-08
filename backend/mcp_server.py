@@ -311,13 +311,17 @@ async def _fetch_and_format_memory(client, uri: str) -> str:
     
     # Header Block
     lines.append("=" * 60)
+    lines.append("")
     lines.append(f"MEMORY: {disp_uri}")
     lines.append(f"Importance: {memory.get('importance', 0)}")
     
     disclosure = memory.get("disclosure")
     if disclosure:
         lines.append(f"Disclosure: {disclosure}")
+    else:
+        lines.append("Disclosure: (not set)")
     
+    lines.append("")
     lines.append("=" * 60)
     lines.append("")
     
@@ -327,7 +331,9 @@ async def _fetch_and_format_memory(client, uri: str) -> str:
     
     if children:
         lines.append("=" * 60)
+        lines.append("")
         lines.append("CHILD MEMORIES (Use 'read_memory' with URI to access)")
+        lines.append("")
         lines.append("=" * 60)
         lines.append("")
         
@@ -336,17 +342,18 @@ async def _fetch_and_format_memory(client, uri: str) -> str:
             child_path = child.get("path", "")
             child_uri = make_uri(child_domain, child_path)
             
-            # Show disclosure if available, otherwise snippet
+            # Show disclosure status and snippet
             child_disclosure = child.get("disclosure")
             snippet = child.get("content_snippet", "")
             
-            lines.append(f"- URI: {child_uri}")
-            lines.append(f"  Importance: {child.get('importance', 0)}")
-                
+            lines.append(f"- URI: {child_uri}  ")
+            lines.append(f"  Importance: {child.get('importance', 0)}  ")
+            
             if child_disclosure:
-                lines.append(f"  When to recall: {child_disclosure}")
+                lines.append(f"  When to recall: {child_disclosure}  ")
             else:
-                lines.append(f"  Snippet: {snippet}")
+                lines.append("  When to recall: (not set)  ")
+                lines.append(f"  Snippet: {snippet}  ")
             
             lines.append("")
     
@@ -560,6 +567,7 @@ async def update_memory(
     """
     Updates an existing memory to a new version.
     The old version will be deleted.
+    警告：update之前需先read_memory，确保你知道你覆盖了什么。
     
     Only provided fields are updated; others remain unchanged.
     
@@ -712,7 +720,7 @@ async def search_memory(query: str, domain: Optional[str] = None, limit: int = 1
     """
     Search memories by title and content using substring matching.
     
-    This uses a simple SQL `LIKE %query%` search. It is NOT semantic search.
+    This uses a simple SQL `LIKE %query%` search. It is **NOT semantic search**.
 
     Args:
         query: Search keywords (substring match)
