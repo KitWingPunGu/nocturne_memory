@@ -2,22 +2,29 @@
 """
 Migration Script: Neo4j -> SQLite (Legacy)
 
-This script migrates memory data from the old Neo4j backend to SQLite.
+This script migrates memory data from the old Neo4j backend (pre-1.0) to SQLite.
 It is kept for users upgrading from pre-SQLite versions of Nocturne Memory.
 
 NOTE: The neo4j driver is NOT included in requirements.txt.
-      If you need to run this migration, install it separately:
-          pip install neo4j>=5.16.0
+      Install it separately before running:
+          pip install "neo4j>=5.16.0"
 
-Mapping:
-- Entity `nocturne` -> path `nocturne`
-- Relationship `rel:A>B` -> path `A/B`
-- Chapter `chap:A>B:name` -> path `A/B/name`
+Required .env variables for migration:
+    DATABASE_URL=sqlite+aiosqlite:///C:/path/to/your/database.db
+    NEO4J_URI=bolt://localhost:7687
+    dbuser=neo4j
+    dbpassword=your_password
+
+Mapping (Neo4j -> SQLite URI):
+    Entity  `nocturne`           -> core://nocturne
+    Relation `rel:A>B`           -> core://A/B
+    Chapter  `chap:A>B:name`     -> core://A/B/name
 
 Usage:
+    cd backend
     python -m scripts.migrate_neo4j_to_sqlite
-    
-    Or from backend directory:
+
+    Or:
     python scripts/migrate_neo4j_to_sqlite.py
 """
 
@@ -26,7 +33,7 @@ import sys
 import asyncio
 import json
 from datetime import datetime
-from typing import Dict, Any, List, Optional
+from typing import Optional
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -66,7 +73,10 @@ class MigrationLogger:
             "memory_id": memory_id,
             "timestamp": datetime.now().isoformat()
         })
-        self.stats[f"{entry_type}s" if entry_type != "entity" else "entities"] += 1
+        # Pluralize: entity -> entities, relationship -> relationships, chapter -> chapters
+        key = "entities" if entry_type == "entity" else f"{entry_type}s"
+        if key in self.stats:
+            self.stats[key] += 1
         self.stats["total_memories"] += 1
         self.stats["total_paths"] += 1
     
@@ -115,6 +125,7 @@ async def migrate_entity(
     neo4j_client,
     sqlite_client: SQLiteClient,
     entity_id: str,
+    domain: str,
     logger: MigrationLogger
 ) -> Optional[int]:
     """
@@ -124,6 +135,11 @@ async def migrate_entity(
         memory_id if successful, None if failed
     """
     try:
+        # Skip relay entities (they will be migrated as chapters)
+        if entity_id.startswith("relay__"):
+            print(f"  [SKIP] Relay entity: {entity_id}")
+            return None
+
         # Get entity info from Neo4j
         info = neo4j_client.get_entity_info(
             entity_id,
@@ -138,20 +154,20 @@ async def migrate_entity(
         
         basic = info["basic"]
         content = basic.get("content", "")
-        name = basic.get("name", entity_id)
         
         # Create in SQLite
-        # Path = entity_id (flat structure)
+        # Path = domain://entity_id (flat, root-level)
         result = await sqlite_client.create_memory(
             parent_path="",  # Root level
             content=content,
-            title=entity_id,  # Use entity_id as title
+            title=entity_id,  # Use entity_id as path segment
             priority=0,
-            disclosure=None
+            disclosure=None,
+            domain=domain,
         )
         
         logger.log("entity", entity_id, result["path"], result["id"])
-        print(f"  [OK] Entity: {entity_id} -> {result['path']}")
+        print(f"  [OK] Entity: {entity_id} -> {domain}://{result['path']}")
         return result["id"]
         
     except Exception as e:
@@ -165,6 +181,7 @@ async def migrate_relationship(
     sqlite_client: SQLiteClient,
     viewer_id: str,
     target_id: str,
+    domain: str,
     logger: MigrationLogger
 ) -> Optional[int]:
     """
@@ -188,19 +205,18 @@ async def migrate_relationship(
         # Build content with relation metadata
         full_content = f"@relation: {relation}\n\n{content}"
         
-        # Path = viewer_id/target_id
-        target_path = f"{viewer_id}/{target_id}"
-        
+        # Path = viewer_id/target_id  (parent must already exist from Phase 1)
         result = await sqlite_client.create_memory(
             parent_path=viewer_id,
             content=full_content,
             title=target_id,
             priority=0,
-            disclosure=None
+            disclosure=None,
+            domain=domain,
         )
         
         logger.log("relationship", f"rel:{viewer_id}>{target_id}", result["path"], result["id"])
-        print(f"  [OK] Relationship: rel:{viewer_id}>{target_id} -> {result['path']}")
+        print(f"  [OK] Relationship: rel:{viewer_id}>{target_id} -> {domain}://{result['path']}")
         return result["id"]
         
     except Exception as e:
@@ -215,6 +231,7 @@ async def migrate_chapter(
     viewer_id: str,
     target_id: str,
     chapter_name: str,
+    domain: str,
     logger: MigrationLogger
 ) -> Optional[int]:
     """
@@ -224,18 +241,18 @@ async def migrate_chapter(
         memory_id if successful, None if failed
     """
     try:
-        # Get chapter content from Neo4j
+        # Get chapter content from Neo4j via relay entity
         relay_entity_id = neo4j_client.generate_relay_entity_id(viewer_id, chapter_name, target_id)
         info = neo4j_client.get_entity_info(relay_entity_id, include_basic=True)
         
         if not info or not info.get("basic"):
-            logger.error("chapter", f"chap:{viewer_id}>{target_id}:{chapter_name}", "Chapter not found")
+            logger.error("chapter", f"chap:{viewer_id}>{target_id}:{chapter_name}", "Chapter relay entity not found")
             return None
         
         basic = info["basic"]
         content = basic.get("content", "")
         
-        # Path = viewer_id/target_id/chapter_name
+        # Path = viewer_id/target_id/chapter_name  (parent must exist from relationship migration)
         parent_path = f"{viewer_id}/{target_id}"
         
         result = await sqlite_client.create_memory(
@@ -243,11 +260,12 @@ async def migrate_chapter(
             content=content,
             title=chapter_name,
             priority=0,
-            disclosure=None
+            disclosure=None,
+            domain=domain,
         )
         
         logger.log("chapter", f"chap:{viewer_id}>{target_id}:{chapter_name}", result["path"], result["id"])
-        print(f"  [OK] Chapter: chap:{viewer_id}>{target_id}:{chapter_name} -> {result['path']}")
+        print(f"  [OK] Chapter: chap:{viewer_id}>{target_id}:{chapter_name} -> {domain}://{result['path']}")
         return result["id"]
         
     except Exception as e:
@@ -256,38 +274,84 @@ async def migrate_chapter(
         return None
 
 
-async def run_migration():
-    """Main migration function."""
-    print("="*60)
-    print("NEO4J -> SQLITE MIGRATION")
-    print("="*60)
+def preflight_check() -> bool:
+    """Validate that all required environment variables are set."""
+    ok = True
+    
+    # SQLite (target)
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        print("[ERROR] DATABASE_URL is not set. Point it to your new SQLite database.")
+        ok = False
+    else:
+        print(f"  SQLite target: {db_url}")
+    
+    # Neo4j (source)
+    neo4j_uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+    neo4j_user = os.getenv("dbuser", "neo4j")
+    print(f"  Neo4j source:  {neo4j_uri} (user: {neo4j_user})")
+    
+    if not os.getenv("dbpassword"):
+        print("[WARN]  dbpassword not set in .env; using default 'password'.")
+    
+    return ok
+
+
+async def run_migration(domain: str = "core"):
+    """
+    Main migration function.
+    
+    Args:
+        domain: Target domain for all migrated memories (default: "core").
+    """
+    print("=" * 60)
+    print("  NEO4J -> SQLITE MIGRATION  (pre-1.0 -> v1.0)")
+    print("=" * 60)
+    
+    # Preflight
+    print("\n[1/6] Preflight check...")
+    if not preflight_check():
+        print("\nAborted: fix the errors above and try again.")
+        return
+    
+    # Confirmation
+    print(f"\n  All memories will be migrated into the '{domain}://' domain.")
+    answer = input("\n  Proceed? [y/N] ").strip().lower()
+    if answer != "y":
+        print("Aborted by user.")
+        return
     
     # Initialize clients
-    print("\n[1/5] Initializing clients...")
-    neo4j_client = get_neo4j_client()
+    print("\n[2/6] Initializing clients...")
+    try:
+        neo4j_client = get_neo4j_client()
+    except Exception as e:
+        print(f"[ERROR] Failed to connect to Neo4j: {e}")
+        return
+    
     sqlite_client = get_sqlite_client()
     
     # Initialize SQLite tables
-    print("[2/5] Creating SQLite tables...")
+    print("[3/6] Creating SQLite tables...")
     await sqlite_client.init_db()
     
     logger = MigrationLogger()
     
     # Get catalog from Neo4j
-    print("[3/5] Reading Neo4j catalog...")
+    print("[4/6] Reading Neo4j catalog...")
     catalog = neo4j_client.get_catalog_data()
     print(f"  Found {len(catalog)} entities in catalog")
     
     # Phase 1: Migrate all entities first (to ensure parent paths exist)
-    print("\n[4/5] Migrating entities...")
+    print(f"\n[5/6] Migrating entities -> {domain}://...")
     entity_ids = set()
     for item in catalog:
         entity_id = item["entity_id"]
         entity_ids.add(entity_id)
-        await migrate_entity(neo4j_client, sqlite_client, entity_id, logger)
+        await migrate_entity(neo4j_client, sqlite_client, entity_id, domain, logger)
     
     # Phase 2: Migrate relationships and chapters
-    print("\n[5/5] Migrating relationships and chapters...")
+    print(f"\n[6/6] Migrating relationships & chapters -> {domain}://...")
     for item in catalog:
         entity_id = item["entity_id"]
         edges = item.get("edges", [])
@@ -296,7 +360,12 @@ async def run_migration():
             target_id = edge["target_entity_id"]
             
             # Migrate the relationship
-            await migrate_relationship(neo4j_client, sqlite_client, entity_id, target_id, logger)
+            # Note: target_id does NOT need to exist as its own path.
+            # The relationship path is viewer_id/target_id, where target_id
+            # is just the last segment (title). Only viewer_id must exist.
+            await migrate_relationship(
+                neo4j_client, sqlite_client, entity_id, target_id, domain, logger
+            )
             
             # Get and migrate chapters
             rel_data = neo4j_client.get_relationship_structure(entity_id, target_id)
@@ -311,7 +380,7 @@ async def run_migration():
                     await migrate_chapter(
                         neo4j_client, sqlite_client,
                         entity_id, target_id, chapter_name,
-                        logger
+                        domain, logger
                     )
     
     # Print summary and save log
@@ -326,4 +395,15 @@ async def run_migration():
 
 
 if __name__ == "__main__":
-    asyncio.run(run_migration())
+    import argparse
+    
+    parser = argparse.ArgumentParser(
+        description="Migrate Nocturne Memory data from Neo4j (pre-1.0) to SQLite (v1.0)."
+    )
+    parser.add_argument(
+        "--domain", default="core",
+        help="Target domain for migrated memories (default: core)"
+    )
+    args = parser.parse_args()
+    
+    asyncio.run(run_migration(domain=args.domain))

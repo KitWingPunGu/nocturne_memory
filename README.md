@@ -389,6 +389,48 @@ disclosure = "在什么时候该想起这件事"。
 
 ---
 
+## 🔄 从旧版 (Neo4j) 迁移到 v1.0 (SQLite)
+
+如果你之前使用的是基于 Neo4j 的旧版 Nocturne Memory（1.0 之前的版本），项目内附带了一个迁移脚本，可以将所有数据转移到新的 SQLite 后端。
+
+### 前提条件
+
+1. 旧的 Neo4j 数据库仍然可以访问（正在运行）。
+2. 安装 Neo4j Python 驱动（新版 `requirements.txt` 中已不再包含）：
+   ```bash
+   pip install "neo4j>=5.16.0"
+   ```
+
+### 迁移步骤
+
+1. **在 `.env` 中添加 Neo4j 连接信息**（与现有的 `DATABASE_URL` 并列）：
+   ```ini
+   # 新的 SQLite 目标数据库（如果你已按照安装指南配置则已存在）
+   DATABASE_URL=sqlite+aiosqlite:///C:/path/to/your/database.db
+
+   # 旧的 Neo4j 数据源（为迁移临时添加）
+   NEO4J_URI=bolt://localhost:7687
+   dbuser=neo4j
+   dbpassword=your_password
+   ```
+
+2. **在 `backend` 目录下运行迁移脚本**：
+   ```bash
+   cd backend
+   python -m scripts.migrate_neo4j_to_sqlite
+   ```
+   脚本会先展示数据概况，确认后才会写入数据。
+
+3. **验证迁移结果**：启动后端（`uvicorn main:app --reload`），通过 Web 界面浏览你的记忆是否完整迁移。
+
+4. **清理**：确认无误后，可以从 `.env` 中删除 `NEO4J_URI`、`dbuser`、`dbpassword` 等配置，并关闭 Neo4j 实例。
+
+> **注意**：默认所有记忆迁移到 `core://` 域。如需使用其他域，传入 `--domain writer` 等参数。
+
+每次迁移完成后会生成 `migration_log.json` 详细日志。
+
+---
+
 ## 📜 License
 
 **MIT License** © 2026 Salem
