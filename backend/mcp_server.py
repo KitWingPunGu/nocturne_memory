@@ -738,14 +738,14 @@ async def delete_memory(uri: str) -> str:
             return f"Error: Memory at '{full_uri}' not found."
 
         result = await client.remove_path(path, domain)
-        snapshot_before = result.get("snapshot_before", {})
+        rows_before = result.get("rows_before", {})
 
         _record_rows(
-            before_state=snapshot_before,
+            before_state=rows_before,
             after_state={},
         )
 
-        deleted_path_count = len(snapshot_before.get("paths", []))
+        deleted_path_count = len(rows_before.get("paths", []))
         descendant_count = max(0, deleted_path_count - 1)
         msg = f"Success: Memory '{full_uri}' deleted."
         if descendant_count > 0:

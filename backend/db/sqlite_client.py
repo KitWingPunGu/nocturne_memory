@@ -1473,7 +1473,8 @@ class SQLiteClient:
             )
 
             return {
-                "snapshot_before": collector.to_dict(),
+                "rows_before": collector.to_dict(),
+                "rows_after": {},
             }
 
     async def restore_path(
@@ -1866,7 +1867,7 @@ class SQLiteClient:
         last memory for the node, hard-GCs the node.
         Refuses to delete an active memory.
 
-        Returns a compact result plus ``snapshot_before`` aligned with
+        Returns a compact result plus ``rows_before`` aligned with
         other delete flows.
         """
         async with self.session() as session:
@@ -1876,7 +1877,7 @@ class SQLiteClient:
                 require_deprecated=True,
             )
 
-            snapshot_before: Dict[str, list] = {
+            rows_before: Dict[str, list] = {
                 "nodes": [],
                 "memories": [delete_result["deleted_memory_before"]],
                 "edges": [],
@@ -1893,9 +1894,10 @@ class SQLiteClient:
                 gc_snapshot = await self._gc_node_if_memoryless(session, node_uuid)
                 if gc_snapshot:
                     for table in ("nodes", "memories", "edges", "paths"):
-                        snapshot_before[table].extend(gc_snapshot.get(table, []))
+                        rows_before[table].extend(gc_snapshot.get(table, []))
 
-            response["snapshot_before"] = snapshot_before
+            response["rows_before"] = rows_before
+            response["rows_after"] = {}
 
             return response
 
