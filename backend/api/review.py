@@ -289,6 +289,13 @@ async def list_groups():
         top_rank = max((TABLE_RANK[t] for t in tables_present), default=1)
         top_table = RANK_TO_TABLE[top_rank]
         
+        top_table_rows = [r for r in rows if r["table"] == top_table]
+        action = "modified"
+        if all(r["before"] is None and r["after"] is not None for r in top_table_rows):
+            action = "created"
+        elif all(r["before"] is not None and r["after"] is None for r in top_table_rows):
+            action = "deleted"
+        
         display_uri = None
         # Attempt to find a display URI from path rows in the changeset (even unchanged ones)
         for r in all_rows:
@@ -323,6 +330,7 @@ async def list_groups():
             node_uuid=node_uuid,
             display_uri=display_uri,
             top_level_table=top_table,
+            action=action,
             row_count=len(rows)
         ))
         
@@ -437,6 +445,42 @@ async def get_group_diff(node_uuid: str):
     top_rank = max((TABLE_RANK[t] for t in tables_present), default=1)
     top_table = RANK_TO_TABLE[top_rank]
 
+    top_table_rows = [r for r in rows if r["table"] == top_table]
+    action = "modified"
+    if all(r["before"] is None and r["after"] is not None for r in top_table_rows):
+        action = "created"
+    elif all(r["before"] is not None and r["after"] is None for r in top_table_rows):
+        action = "deleted"
+
+    # Extract path changes
+    path_changes = []
+    for r in rows:
+        if r["table"] == "paths":
+            if r["before"] is None and r["after"] is not None:
+                path_changes.append({
+                    "action": "created",
+                    "uri": f"{r['after']['domain']}://{r['after']['path']}"
+                })
+            elif r["before"] is not None and r["after"] is None:
+                path_changes.append({
+                    "action": "deleted",
+                    "uri": f"{r['before']['domain']}://{r['before']['path']}"
+                })
+                
+    # If the node was not deleted, fetch its current active paths from the live DB
+    active_paths = []
+    node_is_deleted = (top_table == "nodes" and action == "deleted")
+    if not node_is_deleted:
+        from db.sqlite_client import Path as PathModel
+        async with client.session() as session:
+            db_res = await session.execute(
+                select(PathModel.domain, PathModel.path)
+                .join(Edge, PathModel.edge_id == Edge.id)
+                .where(Edge.child_uuid == node_uuid)
+            )
+            for db_row in db_res:
+                active_paths.append(f"{db_row[0]}://{db_row[1]}")
+
     # Extract text content and metadata for diff viewer
     before_content, before_meta = await _extract_content_and_meta_for_node(rows, "before", node_uuid)
     current_content, current_meta = await _extract_content_and_meta_for_node(rows, "after", node_uuid)
@@ -461,10 +505,13 @@ async def get_group_diff(node_uuid: str):
     return UriDiff(
         uri=node_uuid,
         change_type=top_table,
+        action=action,
         before_content=before_content,
         current_content=current_content,
         before_meta=before_meta,
         current_meta=current_meta,
+        path_changes=path_changes if path_changes else None,
+        active_paths=active_paths if active_paths else None,
         has_changes=has_changes,
     )
 

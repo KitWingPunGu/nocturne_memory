@@ -21,14 +21,22 @@ class ChangeInfo(BaseModel):
     change_type: str  # "created", "modified", "deleted"
 
 
+class PathChange(BaseModel):
+    action: str  # "created", "deleted"
+    uri: str
+
+
 class UriDiff(BaseModel):
     """Diff between before-state and current DB state for one URI."""
     uri: str
     change_type: str
+    action: str = "modified"
     before_content: Optional[str] = None
     current_content: Optional[str] = None
     before_meta: Optional[Dict[str, Any]] = None
     current_meta: Optional[Dict[str, Any]] = None
+    path_changes: Optional[List[PathChange]] = None
+    active_paths: Optional[List[str]] = None
     has_changes: bool
 
 
@@ -42,6 +50,7 @@ class ChangeGroup(BaseModel):
     node_uuid: str
     display_uri: str
     top_level_table: str
+    action: str = "modified"
     row_count: int
 
 
@@ -49,4 +58,3 @@ class GroupRollbackResponse(BaseModel):
     node_uuid: str
     success: bool
     message: str
-
